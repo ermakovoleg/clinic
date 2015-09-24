@@ -1,9 +1,9 @@
 # coding: utf-8
-from datetime import datetime
+from datetime import datetime, time
 
 
 from django.http import Http404
-from django.views.generic import ListView, View
+from django.views.generic import ListView
 from django.http import JsonResponse
 
 from .models import Reception, Doctor
@@ -15,87 +15,59 @@ class ReceptionView(ListView):
     context_object_name = 'doctors'
 
 
-class DoctorView(View):
+def doctorview(request, doctor_id):
+    if request.is_ajax():
+        try:
+            doctor = Doctor.objects.get(id=int(doctor_id))
+        except Doctor.DoesNotExist:
+            return JsonResponse({"type": "error", "message": "Bad doctor_id"})
 
-    def get(self, request, *args, **kwargs):
-        if request.is_ajax():
+        fio = None
+        time_raw = None
+
+        if request.method == 'POST':
+            date_raw = request.POST.get('date')
+            time_raw = int(request.POST.get('time', 0))
+            fio = request.POST.get('fio', '')
+            if not fio:
+                return JsonResponse({"type": "error", "message": "Укажите ФИО"})
+        else:
             date_raw = request.GET.get('date')
-            doctor_id = int(kwargs.get('id', 0))
-            time_raw = int(request.GET.get('time', 0))
 
-            if not (date_raw and doctor_id):
-                return JsonResponse({"type": "error", "message": "Bad data"})
+        if not date_raw:
+            return JsonResponse({"type": "error", "message": "Укажите дату"})
 
-            try:
-                doctor = Doctor.objects.get(id=doctor_id)
-            except Doctor.DoesNotExist:
-                return JsonResponse({"type": "error", "message": "Bad doctor_id"})
+        date = datetime.strptime(date_raw, '%Y-%m-%d').date()
+        if time_raw:
+            if time_raw not in range(9, 18):
+                return JsonResponse({"type": "error", "message": "Выберите рабочее время"})
+            date = datetime.combine(date, time(hour=time_raw))
+        else:
+            date = datetime.combine(date, datetime.max.time())
 
+        if date.isoweekday() in [6, 7]:
+            return JsonResponse({"type": "error", "message": "Выходной"})
+        if date < datetime.now():
+            return JsonResponse({"type": "error", "message": "Прошедшее время"})
 
-            date = datetime.strptime(date_raw, '%Y-%m-%d').date()
+        receptions = doctor.reception_set.filter(datetime__contains=date.date())
 
-            if date.isoweekday() in [6, 7]:
-                return JsonResponse({"type": "error", "message": "Выходной"})
-            if date < datetime.now().date():
-                return JsonResponse({"type": "error", "message": "Так нельзя"})
+        if request.method == 'POST':
+            r = receptions.filter(datetime__hour=time_raw)
+            if r.exists():
+                return JsonResponse({"type": "timeerror", "message": "Время уже занято, попробуйте еще раз"})
+            else:
+                reception = Reception(doctor_id=doctor.id, patient=fio, datetime=date)
+                reception.save()
+                message = "ФИО: {}. \nДоктор: {}. \nДата: {:%d %m %Y}  \nВремя: {} часов.".format(fio, doctor.name, date, time_raw)
+                return JsonResponse({"type": "success", "message": message})
 
-            receptions = doctor.reception_set.filter(datetime__contains=date)
-
+        else:
             busy_time = []
             for r in receptions:
                 busy_time.append(r.datetime.hour)
 
-            if time_raw and time_raw in range(9, 18):
-                r = receptions.filter(datetime__hour=time_raw)
-                if r.exists():
-                    return JsonResponse({"type": "error", "message": "Время уже занято", "busy_time": busy_time})
-                return JsonResponse({"type": "success"})
-
             return JsonResponse({"type": "success", "busy_time": busy_time})
-        else:
-            raise Http404("error")
 
-
-    def post(self, request, *args, **kwargs):
-        if request.is_ajax():
-            date_raw = request.POST.get('date')
-            doctor_id = int(kwargs.get('id', 0))
-            time_raw = int(request.POST.get('time', 0))
-            fio = request.POST.get('fio', '')
-
-            if not (date_raw and doctor_id and time_raw and fio):
-                return JsonResponse({"type": "error", "message": "Bad data"})
-
-            try:
-                doctor = Doctor.objects.get(id=doctor_id)
-            except Doctor.DoesNotExist:
-                return JsonResponse({"type": "error", "message": "Bad doctor_id"})
-
-
-            date = datetime.strptime("{} {}".format(date_raw, time_raw), '%Y-%m-%d %H')
-
-            if date < datetime.now():
-                return JsonResponse({"type": "error", "message": "Так нельзя"})
-
-            receptions = doctor.reception_set.filter(datetime__contains=date)
-
-            if receptions.exists() and time_raw in range(9, 18):
-                return JsonResponse({"type": "error", "message": "Время уже занято"})
-
-            reception = Reception(doctor_id=doctor.id, patient=fio, datetime=date)
-            reception.save()
-            message = "{} записанн к {}. Время {:%d %B %Y %H:%M}".format(fio, doctor.name, date)
-            return JsonResponse({"type": "success", "message": message})
-        else:
-            raise Http404("error")
-
-
-
-
-
-
-
-
-
-
-
+    else:
+       raise Http404("error")
